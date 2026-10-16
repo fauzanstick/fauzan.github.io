@@ -1,0 +1,245 @@
+<!DOCTYPE html>
+<html lang="id">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Rumah Pintar ESP32</title>
+<script src="https://cdn.jsdelivr.net/npm/mqtt@5.4.1/dist/mqtt.min.js"></script>
+<style>
+:root{--bg:#0e1a2b;--panel:#16263d;--ink:#eaf1fb;--mute:#8fa3bf;--lamp:#ffc857;--leaf:#4fd18b;--water:#58b7ff;--bad:#ff7a6b;--line:#27405f}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--ink);font-family:'Avenir Next','Trebuchet MS',sans-serif;line-height:1.5}
+main{max-width:980px;margin:0 auto;padding:16px}
+header{display:flex;flex-wrap:wrap;gap:10px;align-items:center;justify-content:space-between;margin-bottom:12px}
+h1{font-size:1.5rem;margin:0}
+h2{font-size:1.05rem;margin:0 0 8px}
+#chip{padding:4px 12px;border-radius:99px;background:#33445e;font-size:.85rem}
+#chip.on{background:#1f6b45}
+details{background:var(--panel);border-radius:12px;padding:10px 14px;margin-bottom:12px}
+summary{cursor:pointer}
+.cfg{display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:10px;margin-top:10px}
+label{font-size:.85rem;color:var(--mute);display:block}
+input[type=text],input[type=time]{width:100%;padding:8px;border-radius:8px;border:1px solid var(--line);background:#0e1a2b;color:var(--ink)}
+button{cursor:pointer;border:0;border-radius:10px;padding:9px 14px;font:inherit;background:var(--water);color:#06223a;font-weight:700}
+button:focus-visible,input:focus-visible{outline:3px solid var(--lamp);outline-offset:2px}
+svg{width:100%;height:auto;display:block;border-radius:16px;background:#12223a}
+.rows{display:grid;grid-template-columns:repeat(auto-fit,minmax(250px,1fr));gap:12px;margin:12px 0}
+.card{background:var(--panel);border-radius:14px;padding:14px;display:flex;justify-content:space-between;align-items:center;gap:10px}
+.card small{color:var(--mute);display:block}
+.sw{width:58px;height:32px;border-radius:99px;background:#3a4c68;border:0;position:relative;padding:0;transition:background .3s;flex:none}
+.sw::after{content:"";position:absolute;top:4px;left:4px;width:24px;height:24px;border-radius:50%;background:#fff;transition:transform .3s}
+.sw[aria-pressed=true]{background:var(--lamp)}
+.sw.water[aria-pressed=true]{background:var(--water)}
+.sw[aria-pressed=true]::after{transform:translateX(26px)}
+.acts{background:var(--panel);border-radius:14px;padding:14px}
+.act{display:grid;grid-template-columns:auto 1fr auto auto;gap:10px;align-items:center;padding:8px 0;border-top:1px solid var(--line)}
+.act:first-of-type{border-top:0}
+.act input[type=time]{width:110px}
+.st{font-size:.8rem;padding:2px 10px;border-radius:99px;background:#33445e;white-space:nowrap}
+.st.ok{background:#1f6b45}.st.late{background:#8a3a30}
+.ic{font-size:1.4rem}
+/* animasi lampu */
+.glow{opacity:0;transition:opacity .6s}
+.lamp-on .glow{opacity:1;animation:pulse 3s ease-in-out infinite}
+.dark{opacity:.6;transition:opacity .6s}
+.lamp-on .dark{opacity:0}
+.lamp-on .bulb{fill:var(--lamp)}
+.bulb{fill:#5b6b82;transition:fill .4s}
+@keyframes pulse{50%{opacity:.75}}
+/* animasi siram */
+.drop{opacity:0;fill:var(--water)}
+.watering .drop{animation:fall .9s linear infinite}
+@keyframes fall{0%{opacity:0;transform:translate(0,0)}15%{opacity:1}100%{opacity:0;transform:translate(var(--dx),64px)}}
+.plant{transform-box:fill-box;transform-origin:bottom center;transition:transform 2s ease}
+.watering .plant{transform:scale(1.18)}
+.watering .spray{animation:sway 1.4s ease-in-out infinite;transform-box:fill-box;transform-origin:center}
+@keyframes sway{50%{transform:rotate(8deg)}}
+@media (prefers-reduced-motion:reduce){*{animation:none!important;transition:none!important}}
+</style>
+</head>
+<body>
+<main>
+<header>
+  <h1>Rumah Pintar ESP32</h1>
+  <span id="chip">Mode demo (belum terhubung)</span>
+</header>
+
+<details>
+  <summary>Pengaturan MQTT</summary>
+  <div class="cfg">
+    <div><label for="url">Broker (WebSocket)</label><input id="url" type="text" value="wss://broker.emqx.io:8084/mqtt"></div>
+    <div><label for="pre">Prefix topik (ganti biar unik)</label><input id="pre" type="text" value="rumahku123"></div>
+    <div style="align-self:end"><button id="conn">Hubungkan</button></div>
+  </div>
+  <p style="color:var(--mute);font-size:.85rem;margin:10px 0 0">Topik: <code>prefix/lampu/tamu</code>, <code>prefix/lampu/kamar</code>, <code>prefix/kebun/siram</code> (payload <code>ON</code>/<code>OFF</code>), <code>prefix/aktivitas/&lt;id&gt;</code> (<code>done</code>/<code>pending</code>).</p>
+</details>
+
+<svg viewBox="0 0 680 320" role="img" aria-label="Rumah dengan ruang tamu, kamar, dan kebun">
+  <defs>
+    <radialGradient id="g"><stop offset="0" stop-color="#ffd988" stop-opacity=".9"/><stop offset="1" stop-color="#ffd988" stop-opacity="0"/></radialGradient>
+  </defs>
+  <!-- ruang tamu -->
+  <g id="roomTamu">
+    <rect x="20" y="20" width="300" height="180" rx="10" fill="#2b3f5e"/>
+    <rect x="20" y="170" width="300" height="30" fill="#3a2f2a"/>
+    <rect x="60" y="130" width="120" height="40" rx="8" fill="#7a4e6b"/>
+    <rect x="60" y="115" width="120" height="22" rx="8" fill="#8f5f7f"/>
+    <rect x="230" y="60" width="60" height="50" rx="4" fill="#1a2c47" stroke="#4a6488"/>
+    <circle cx="170" cy="75" r="85" fill="url(#g)" class="glow"/>
+    <line x1="170" y1="20" x2="170" y2="62" stroke="#8fa3bf" stroke-width="2"/>
+    <circle cx="170" cy="70" r="11" class="bulb"/>
+    <rect x="20" y="20" width="300" height="180" rx="10" fill="#050b16" class="dark"/>
+    <text x="32" y="42" fill="#cfe0f7" font-size="14">Ruang tamu</text>
+  </g>
+  <!-- kamar -->
+  <g id="roomKamar">
+    <rect x="340" y="20" width="320" height="180" rx="10" fill="#2f3b66"/>
+    <rect x="340" y="170" width="320" height="30" fill="#3a2f2a"/>
+    <rect x="390" y="130" width="170" height="40" rx="6" fill="#5b8fd1"/>
+    <rect x="390" y="118" width="45" height="18" rx="6" fill="#e9eef7"/>
+    <circle cx="500" cy="80" r="90" fill="url(#g)" class="glow"/>
+    <line x1="500" y1="20" x2="500" y2="67" stroke="#8fa3bf" stroke-width="2"/>
+    <circle cx="500" cy="75" r="11" class="bulb"/>
+    <rect x="340" y="20" width="320" height="180" rx="10" fill="#050b16" class="dark"/>
+    <text x="352" y="42" fill="#cfe0f7" font-size="14">Kamar</text>
+  </g>
+  <!-- kebun -->
+  <g id="garden">
+    <rect x="0" y="200" width="680" height="120" fill="#1f3a2c"/>
+    <text x="14" y="222" fill="#bfe8d0" font-size="14">Kebun</text>
+    <g class="spray"><rect x="330" y="236" width="8" height="48" fill="#8fa3bf"/><circle cx="334" cy="234" r="7" fill="#58b7ff"/></g>
+    <g id="plants">
+      <g class="plant"><rect x="130" y="258" width="4" height="30" fill="#2e8b57"/><circle cx="132" cy="254" r="14" fill="#4fd18b"/></g>
+      <g class="plant"><rect x="210" y="262" width="4" height="26" fill="#2e8b57"/><circle cx="212" cy="256" r="12" fill="#3fbf7b"/></g>
+      <g class="plant"><rect x="450" y="258" width="4" height="30" fill="#2e8b57"/><circle cx="452" cy="252" r="15" fill="#4fd18b"/></g>
+      <g class="plant"><rect x="540" y="262" width="4" height="26" fill="#2e8b57"/><circle cx="542" cy="256" r="12" fill="#3fbf7b"/></g>
+    </g>
+    <g id="drops">
+      <circle class="drop" cx="334" cy="236" r="3" style="--dx:-150px;animation-delay:0s"/>
+      <circle class="drop" cx="334" cy="236" r="3" style="--dx:-100px;animation-delay:.15s"/>
+      <circle class="drop" cx="334" cy="236" r="3" style="--dx:-50px;animation-delay:.3s"/>
+      <circle class="drop" cx="334" cy="236" r="3" style="--dx:50px;animation-delay:.45s"/>
+      <circle class="drop" cx="334" cy="236" r="3" style="--dx:100px;animation-delay:.6s"/>
+      <circle class="drop" cx="334" cy="236" r="3" style="--dx:150px;animation-delay:.75s"/>
+    </g>
+  </g>
+</svg>
+
+<div class="rows">
+  <div class="card"><div><strong>Lampu tamu</strong><small id="t-tamu">Mati</small></div><button class="sw" id="sw-tamu" aria-pressed="false" aria-label="Lampu tamu"></button></div>
+  <div class="card"><div><strong>Lampu kamar</strong><small id="t-kamar">Mati</small></div><button class="sw" id="sw-kamar" aria-pressed="false" aria-label="Lampu kamar"></button></div>
+  <div class="card"><div><strong>Siram kebun</strong><small id="t-siram">Mati (otomatis berhenti 15 detik)</small></div><button class="sw water" id="sw-siram" aria-pressed="false" aria-label="Siram kebun"></button></div>
+</div>
+
+<section class="acts">
+  <h2>Aktivitas hari ini</h2>
+  <div id="list"></div>
+</section>
+</main>
+
+<script>
+const ACTS=[
+  {id:'bangun',n:'Bangun pagi',i:'⏰',t:'04:30'},
+  {id:'subuh',n:'Solat Subuh',i:'🕌',t:'04:45'},
+  {id:'minum',n:'Minum air',i:'💧',t:'05:15'},
+  {id:'makan',n:'Makan',i:'🍚',t:'06:15'},
+  {id:'sekolah',n:'Sekolah',i:'🎒',t:'06:45'},
+  {id:'tidur',n:'Tidur tepat waktu',i:'🌙',t:'21:30'}
+];
+const $=id=>document.getElementById(id);
+const state={tamu:false,kamar:false,siram:false};
+const done={}; // id -> menit saat selesai
+let client=null,timer=null;
+const prefix=()=>$('pre').value.trim()||'rumahku';
+const mins=s=>{const[a,b]=s.split(':');return +a*60+ +b};
+const nowMin=()=>{const d=new Date();return d.getHours()*60+d.getMinutes()};
+
+function pub(topic,msg){
+  if(client&&client.connected)client.publish(prefix()+'/'+topic,msg,{retain:true});
+}
+function render(k){
+  const on=state[k];
+  const btn=$('sw-'+k);btn.setAttribute('aria-pressed',on);
+  if(k==='siram'){
+    $('garden').classList.toggle('watering',on);
+    $('t-siram').textContent=on?'Menyiram...':'Mati (otomatis berhenti 15 detik)';
+  }else{
+    $(k==='tamu'?'roomTamu':'roomKamar').classList.toggle('lamp-on',on);
+    $('t-'+k).textContent=on?'Menyala':'Mati';
+  }
+}
+function setDev(k,on,send){
+  state[k]=on;render(k);
+  if(send)pub(k==='siram'?'kebun/siram':'lampu/'+k,on?'ON':'OFF');
+  if(k==='siram'){
+    clearTimeout(timer);
+    if(on&&send)timer=setTimeout(()=>setDev('siram',false,true),15000);
+  }
+}
+['tamu','kamar','siram'].forEach(k=>{
+  $('sw-'+k).onclick=()=>setDev(k,!state[k],true);
+});
+
+function drawActs(){
+  const box=$('list');
+  box.innerHTML='';
+  ACTS.forEach(a=>{
+    const row=document.createElement('div');row.className='act';
+    row.innerHTML=`<span class="ic">${a.i}</span><label style="color:var(--ink);font-size:1rem" for="c-${a.id}">${a.n}</label>
+    <input type="time" id="c-${a.id}" value="${a.t}" aria-label="Jam ${a.n}">
+    <button id="b-${a.id}"></button>`;
+    box.appendChild(row);
+    $('c-'+a.id).onchange=e=>{a.t=e.target.value;refreshActs()};
+    $('b-'+a.id).onclick=()=>toggleAct(a);
+    const st=document.createElement('span');st.className='st';st.id='s-'+a.id;
+    row.insertBefore(st,$('b-'+a.id));
+  });
+  refreshActs();
+}
+function toggleAct(a,val,send=true){
+  const isDone=val!==undefined?val:!(a.id in done);
+  if(isDone)done[a.id]=nowMin();else delete done[a.id];
+  refreshActs();
+  if(send)pub('aktivitas/'+a.id,isDone?'done':'pending');
+}
+function refreshActs(){
+  ACTS.forEach(a=>{
+    const s=$('s-'+a.id),b=$('b-'+a.id);
+    s.className='st';
+    if(a.id in done){
+      const ok=done[a.id]<=mins(a.t)+15;
+      s.textContent=ok?'Tepat waktu':'Selesai (telat)';
+      s.classList.add(ok?'ok':'late');
+      b.textContent='Batal';
+    }else{
+      const late=nowMin()>mins(a.t)+15;
+      s.textContent=late?'Terlambat':'Menunggu';
+      if(late)s.classList.add('late');
+      b.textContent='Selesai';
+    }
+  });
+}
+setInterval(refreshActs,30000);
+
+function connect(){
+  if(client){client.end(true);client=null}
+  if(typeof mqtt==='undefined'){$('chip').textContent='Library MQTT gagal dimuat (cek internet)';return}
+  $('chip').textContent='Menghubungkan...';
+  client=mqtt.connect($('url').value.trim(),{clientId:'web-'+Math.random().toString(16).slice(2,8),reconnectPeriod:4000});
+  client.on('connect',()=>{
+    $('chip').textContent='Terhubung ke broker';$('chip').classList.add('on');
+    client.subscribe(prefix()+'/#');
+  });
+  client.on('close',()=>{$('chip').textContent='Terputus, mencoba lagi... (mode demo)';$('chip').classList.remove('on')});
+  client.on('message',(topic,buf)=>{
+    const p=topic.slice(prefix().length+1).split('/'),m=buf.toString();
+    if(p[0]==='lampu'&&state.hasOwnProperty(p[1]))setDev(p[1],m==='ON',false);
+    if(p[0]==='kebun'&&p[1]==='siram')setDev('siram',m==='ON',false);
+    if(p[0]==='aktivitas'){const a=ACTS.find(x=>x.id===p[1]);if(a)toggleAct(a,m==='done',false)}
+  });
+}
+$('conn').onclick=connect;
+drawActs();
+</script>
+</body>
+</html>
